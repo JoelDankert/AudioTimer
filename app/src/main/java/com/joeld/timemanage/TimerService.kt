@@ -320,7 +320,11 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
         return listOfNotNull(
             if (parts.contains(RouteInfoPart.Meter)) meterMessage(distance) else null,
-            if (parts.contains(RouteInfoPart.Current)) speedMessage(currentSpeed, "current") else null,
+            if (parts.contains(RouteInfoPart.Current) && currentSpeed.isSpeakingSpeed()) {
+                speedMessage(currentSpeed, "current")
+            } else {
+                null
+            },
             if (parts.contains(RouteInfoPart.Required)) speedMessage(requiredSpeed, "needed") else null,
             if (parts.contains(RouteInfoPart.Relative)) relativeMessage(currentSpeed, requiredSpeed) else null
         ).joinToString(" ")
@@ -339,13 +343,18 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun relativeMessage(currentSpeed: Double?, requiredSpeed: Double?): String? {
-        if (currentSpeed == null || requiredSpeed == null || currentSpeed <= 0.1) return null
-        val percent = (((requiredSpeed / currentSpeed) - 1.0) * 100.0).roundToInt()
+        if (!currentSpeed.isSpeakingSpeed() || requiredSpeed == null) return null
+        val speakingSpeed = currentSpeed ?: return null
+        val percent = (((requiredSpeed / speakingSpeed) - 1.0) * 100.0).roundToInt()
         return when {
             percent > 0 -> "$percent% faster."
             percent < 0 -> if (TimerStore.relativeOnlyIfPositive) null else "${-percent}% slower."
             else -> "0% faster."
         }
+    }
+
+    private fun Double?.isSpeakingSpeed(): Boolean {
+        return this != null && this >= 2.0
     }
 
     companion object {
