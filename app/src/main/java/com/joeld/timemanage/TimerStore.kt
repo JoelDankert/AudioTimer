@@ -19,22 +19,49 @@ enum class RouteInfoPart(val label: String) {
     Relative("relative"),
 }
 
+enum class SpeedUnit(val label: String, val speechLabel: String) {
+    Kmh("km/h", "kmh"),
+    MinPerKm("min/km", "minutes per km"),
+    Mps("m/s", "meters per second")
+}
+
 object TimerStore {
     private const val PREFS = "timer_settings"
     private const val KEY_AUDIO_MODE = "audio_mode"
+    private const val KEY_SPEED_UNIT = "speed_unit"
+    private const val KEY_REPEAT_REMAINING_TIME = "repeat_remaining_time"
+    private const val KEY_SPEAK_ROUTE_INFO = "speak_route_info"
+    private const val KEY_USE_ALL_IF_ROUTING = "use_all_if_routing"
     private const val KEY_BLUETOOTH_FAILSAFE = "bluetooth_failsafe"
     private const val KEY_ROUTE_INFO_INTERVAL_SECONDS = "route_info_interval_seconds"
     private const val KEY_ROUTE_INFO_PARTS = "route_info_parts"
     private const val KEY_RELATIVE_ONLY_IF_POSITIVE = "relative_only_if_positive"
     private val DEFAULT_AUDIO_MODE = AudioMode.Adaptive
+    private val DEFAULT_SPEED_UNIT = SpeedUnit.Kmh
+    private const val DEFAULT_REPEAT_REMAINING_TIME = true
+    private const val DEFAULT_SPEAK_ROUTE_INFO = true
+    private const val DEFAULT_USE_ALL_IF_ROUTING = true
     private const val DEFAULT_BLUETOOTH_FAILSAFE = true
     private const val DEFAULT_ROUTE_INFO_INTERVAL_SECONDS = 10
+    private const val DEFAULT_RELATIVE_ONLY_IF_POSITIVE = true
     private val DEFAULT_ROUTE_INFO_PARTS = setOf(RouteInfoPart.Relative)
 
     var remainingMillis by mutableLongStateOf(0L)
         private set
 
     var audioMode by mutableStateOf(DEFAULT_AUDIO_MODE)
+        private set
+
+    var speedUnit by mutableStateOf(DEFAULT_SPEED_UNIT)
+        private set
+
+    var repeatRemainingTime by mutableStateOf(DEFAULT_REPEAT_REMAINING_TIME)
+        private set
+
+    var speakRouteInfo by mutableStateOf(DEFAULT_SPEAK_ROUTE_INFO)
+        private set
+
+    var useAllIfRouting by mutableStateOf(DEFAULT_USE_ALL_IF_ROUTING)
         private set
 
     var bluetoothFailsafeEnabled by mutableStateOf(DEFAULT_BLUETOOTH_FAILSAFE)
@@ -49,13 +76,18 @@ object TimerStore {
     var routeInfoParts by mutableStateOf(DEFAULT_ROUTE_INFO_PARTS)
         private set
 
-    var relativeOnlyIfPositive by mutableStateOf(true)
+    var relativeOnlyIfPositive by mutableStateOf(DEFAULT_RELATIVE_ONLY_IF_POSITIVE)
         private set
 
     fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = prefs.getString(KEY_AUDIO_MODE, DEFAULT_AUDIO_MODE.name)
         audioMode = AudioMode.entries.firstOrNull { it.name == saved } ?: DEFAULT_AUDIO_MODE
+        val savedSpeedUnit = prefs.getString(KEY_SPEED_UNIT, DEFAULT_SPEED_UNIT.name)
+        speedUnit = SpeedUnit.entries.firstOrNull { it.name == savedSpeedUnit } ?: DEFAULT_SPEED_UNIT
+        repeatRemainingTime = prefs.getBoolean(KEY_REPEAT_REMAINING_TIME, DEFAULT_REPEAT_REMAINING_TIME)
+        speakRouteInfo = prefs.getBoolean(KEY_SPEAK_ROUTE_INFO, DEFAULT_SPEAK_ROUTE_INFO)
+        useAllIfRouting = prefs.getBoolean(KEY_USE_ALL_IF_ROUTING, DEFAULT_USE_ALL_IF_ROUTING)
         bluetoothFailsafeEnabled = prefs.getBoolean(KEY_BLUETOOTH_FAILSAFE, DEFAULT_BLUETOOTH_FAILSAFE)
         routeInfoIntervalSeconds = prefs.getInt(
             KEY_ROUTE_INFO_INTERVAL_SECONDS,
@@ -68,7 +100,10 @@ object TimerStore {
             ?.toSet()
             ?.takeIf { it.isNotEmpty() }
             ?: DEFAULT_ROUTE_INFO_PARTS
-        relativeOnlyIfPositive = prefs.getBoolean(KEY_RELATIVE_ONLY_IF_POSITIVE, true)
+        relativeOnlyIfPositive = prefs.getBoolean(
+            KEY_RELATIVE_ONLY_IF_POSITIVE,
+            DEFAULT_RELATIVE_ONLY_IF_POSITIVE
+        )
     }
 
     fun updateAudioMode(mode: AudioMode) {
@@ -77,6 +112,42 @@ object TimerStore {
             ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             ?.edit()
             ?.putString(KEY_AUDIO_MODE, mode.name)
+            ?.apply()
+    }
+
+    fun updateSpeedUnit(unit: SpeedUnit) {
+        speedUnit = unit
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString(KEY_SPEED_UNIT, unit.name)
+            ?.apply()
+    }
+
+    fun updateRepeatRemainingTime(enabled: Boolean) {
+        repeatRemainingTime = enabled
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_REPEAT_REMAINING_TIME, enabled)
+            ?.apply()
+    }
+
+    fun updateSpeakRouteInfo(enabled: Boolean) {
+        speakRouteInfo = enabled
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_SPEAK_ROUTE_INFO, enabled)
+            ?.apply()
+    }
+
+    fun updateUseAllIfRouting(enabled: Boolean) {
+        useAllIfRouting = enabled
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_USE_ALL_IF_ROUTING, enabled)
             ?.apply()
     }
 

@@ -42,9 +42,14 @@ object LocationStore {
         private set
     var currentSpeedKmh by mutableStateOf<Double?>(null)
         private set
+    var targetPaceKmh by mutableStateOf<Double?>(null)
+        private set
 
     val selectedLocation: SavedLocation?
         get() = locations.firstOrNull { it.id == selectedLocationId }
+
+    val routeActive: Boolean
+        get() = selectedLocation != null || targetPaceKmh != null
 
     fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -87,6 +92,7 @@ object LocationStore {
     fun addLocation(location: SavedLocation) {
         locations += location.copy(useCount = 1, lastUsedAt = System.currentTimeMillis())
         selectedLocationId = location.id
+        targetPaceKmh = null
         distanceMeters = null
         distanceStatus = null
         sortLocations()
@@ -122,6 +128,7 @@ object LocationStore {
 
     fun selectLocation(location: SavedLocation) {
         selectedLocationId = location.id
+        targetPaceKmh = null
         val index = locations.indexOfFirst { it.id == location.id }
         if (index != -1) {
             val current = locations[index]
@@ -137,10 +144,21 @@ object LocationStore {
         save()
     }
 
-    fun clearSelection() {
+    fun selectPace(kmh: Double) {
         selectedLocationId = null
+        targetPaceKmh = kmh
         distanceMeters = null
         distanceStatus = null
+        currentSpeedKmh = null
+        save()
+    }
+
+    fun clearSelection() {
+        selectedLocationId = null
+        targetPaceKmh = null
+        distanceMeters = null
+        distanceStatus = null
+        currentSpeedKmh = null
         save()
     }
 

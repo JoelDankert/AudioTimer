@@ -26,6 +26,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
@@ -121,7 +124,7 @@ class MainActivity : ComponentActivity() {
         }
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            TimerStore.audioMode != AudioMode.None &&
+            (TimerStore.repeatRemainingTime || TimerStore.speakRouteInfo) &&
             TimerStore.bluetoothFailsafeEnabled &&
             !hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
         ) {
@@ -151,8 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startRouteTracking() {
-        val selected = LocationStore.selectedLocation
-        if (selected == null) {
+        if (!LocationStore.routeActive) {
             stopRouteTracking()
             return
         }
@@ -379,11 +381,14 @@ fun TimerScreen(modifier: Modifier = Modifier) {
     var settingsOpen by remember { mutableStateOf(false) }
     var durationOpen by remember { mutableStateOf(false) }
     var locationEditorOpen by remember { mutableStateOf(false) }
+    var paceOpen by remember { mutableStateOf(false) }
     var editingLocation by remember { mutableStateOf<SavedLocation?>(null) }
 
-    LaunchedEffect(LocationStore.selectedLocationId, LocationStore.travelMode) {
-        if (LocationStore.selectedLocation != null) {
-            activity?.refreshSelectedDistance()
+    LaunchedEffect(LocationStore.selectedLocationId, LocationStore.targetPaceKmh, LocationStore.travelMode) {
+        if (LocationStore.routeActive) {
+            if (LocationStore.selectedLocation != null) {
+                activity?.refreshSelectedDistance()
+            }
             activity?.startRouteTracking()
         } else {
             activity?.stopRouteTracking()
@@ -441,6 +446,7 @@ fun TimerScreen(modifier: Modifier = Modifier) {
                 editingLocation = null
                 locationEditorOpen = true
             },
+            onSetPace = { paceOpen = true },
             onEditLocation = { location ->
                 editingLocation = location
                 locationEditorOpen = true
@@ -470,11 +476,21 @@ fun TimerScreen(modifier: Modifier = Modifier) {
             }
         )
     }
+    if (paceOpen) {
+        PaceDialog(
+            onDismiss = { paceOpen = false },
+            onSet = { kmh ->
+                paceOpen = false
+                TimerStore.markRouteEstimateTimer(false)
+                LocationStore.selectPace(kmh)
+            }
+        )
+    }
 }
 
 @Composable
 private fun TimerHeader() {
-    if (LocationStore.selectedLocation == null) {
+    if (!LocationStore.routeActive) {
         Text(
             text = formatRemaining(TimerStore.remainingMillis),
             fontSize = 48.sp,
@@ -550,6 +566,7 @@ private fun LocationSelector(
     onRefreshDistance: () -> Unit,
     onClearSelection: () -> Unit,
     onAddLocation: () -> Unit,
+    onSetPace: () -> Unit,
     onEditLocation: (SavedLocation) -> Unit
 ) {
     val locationRowHeight = 40.dp
@@ -562,18 +579,6 @@ private fun LocationSelector(
         CollapseArrow(expanded = LocationStore.expanded)
     }
     if (!LocationStore.expanded) return
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
-    ) {
-        RoundAction(
-            text = "×",
-            background = MaterialTheme.colorScheme.error,
-            onClick = onClearSelection
-        )
-    }
 
     Spacer(modifier = Modifier.height(14.dp))
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -596,11 +601,23 @@ private fun LocationSelector(
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
-        RoundAction(
-            text = "+",
-            background = MaterialTheme.colorScheme.primary,
-            onClick = onAddLocation
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            RoundAction(
+                text = "+",
+                background = MaterialTheme.colorScheme.primary,
+                onClick = onAddLocation
+            )
+            RoundAction(
+                text = "×",
+                background = MaterialTheme.colorScheme.error,
+                onClick = onClearSelection
+            )
+            RoundAction(
+                text = ">",
+                background = MaterialTheme.colorScheme.primary,
+                onClick = onSetPace
+            )
+        }
     }
 }
 
@@ -626,7 +643,12 @@ private fun CollapseArrow(expanded: Boolean) {
 }
 
 @Composable
-private fun RoundAction(text: String, background: Color, onClick: () -> Unit) {
+private fun RoundAction(
+    text: String,
+    background: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit = 24.sp,
+    onClick: () -> Unit
+) {
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -635,7 +657,7 @@ private fun RoundAction(text: String, background: Color, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = text, color = Color.Black, fontSize = 24.sp)
+        Text(text = text, color = Color.Black, fontSize = fontSize)
     }
 }
 
@@ -758,8 +780,60 @@ private fun LocationEditorDialog(location: SavedLocation?, onDismiss: () -> Unit
 }
 
 @Composable
+private fun PaceDialog(onDismiss: () -> Unit, onSet: (Double) -> Unit) {
+    var paceText by remember {
+        mutableStateOf(LocationStore.targetPaceKmh?.let { formatPaceInputValue(it) } ?: "")
+    }
+    val pace = paceText.replace(',', '.').toDoubleOrNull()?.let { kmhFromSpeedValue(it) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                enabled = pace != null && pace >= 0.0,
+                onClick = { pace?.let(onSet) }
+            ) {
+                Text("set")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("cancel")
+            }
+        },
+        title = { Text("pace") },
+        text = {
+            OutlinedTextField(
+                value = paceText,
+                onValueChange = { value ->
+                    paceText = value
+                        .filter { it.isDigit() || it == '.' || it == ',' }
+                        .replaceFirst(',', '.')
+                        .let { clean ->
+                            val firstDot = clean.indexOf('.')
+                            if (firstDot == -1) {
+                                clean
+                            } else {
+                                clean.take(firstDot + 1) + clean.drop(firstDot + 1).replace(".", "")
+                            }
+                        }
+                        .take(5)
+                },
+                singleLine = true,
+                label = { Text(TimerStore.speedUnit.label) }
+            )
+        }
+    )
+}
+
+@Composable
 private fun SettingsDialog(onDismiss: () -> Unit) {
     var routeIntervalText by remember { mutableStateOf(TimerStore.routeInfoIntervalSeconds.toString()) }
+    var speedUnitOpen by remember { mutableStateOf(false) }
+
+    if (speedUnitOpen) {
+        SpeedUnitDialog(onDismiss = { speedUnitOpen = false })
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -770,9 +844,49 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
         },
         title = { Text("settings") },
         text = {
-            Column {
-                SettingsSectionTitle("audio")
-                AudioMode.entries.forEach { mode ->
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 8.dp)
+            ) {
+                SettingsSectionTitle("general")
+                TextButton(onClick = { speedUnitOpen = true }) {
+                    Text(
+                        text = TimerStore.speedUnit.label,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(
+                        text = "unit",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = TimerStore.repeatRemainingTime,
+                        onCheckedChange = { TimerStore.updateRepeatRemainingTime(it) }
+                    )
+                    Text("speak remaining time")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = TimerStore.speakRouteInfo,
+                        onCheckedChange = { TimerStore.updateSpeakRouteInfo(it) }
+                    )
+                    Text("speak route info")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = TimerStore.bluetoothFailsafeEnabled,
+                        onCheckedChange = { TimerStore.updateBluetoothFailsafe(it) }
+                    )
+                    Text("mute if bluetooth disconnects")
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                SettingsSectionTitle("remaining time")
+                listOf(AudioMode.Adaptive, AudioMode.All).forEach { mode ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(
                             selected = TimerStore.audioMode == mode,
@@ -783,10 +897,10 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
-                        checked = TimerStore.bluetoothFailsafeEnabled,
-                        onCheckedChange = { TimerStore.updateBluetoothFailsafe(it) }
+                        checked = TimerStore.useAllIfRouting,
+                        onCheckedChange = { TimerStore.updateUseAllIfRouting(it) }
                     )
-                    Text("mute if bluetooth disconnects")
+                    Text("use all if routing")
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 SettingsSectionTitle("route info")
@@ -833,8 +947,38 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
 private fun SettingsSectionTitle(text: String) {
     Text(
         text = text,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp),
+        color = Color.White,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.SemiBold,
         textAlign = TextAlign.Center
+    )
+}
+
+@Composable
+private fun SpeedUnitDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        title = { Text("unit") },
+        text = {
+            Column {
+                SpeedUnit.entries.forEach { unit ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = TimerStore.speedUnit == unit,
+                            onClick = {
+                                TimerStore.updateSpeedUnit(unit)
+                                onDismiss()
+                            }
+                        )
+                        Text(unit.label)
+                    }
+                }
+            }
+        }
     )
 }
 
@@ -985,6 +1129,7 @@ private fun stopTimer(context: Context) {
 }
 
 private fun requiredSpeedKmh(): Double? {
+    LocationStore.targetPaceKmh?.let { return it }
     val distanceMeters = LocationStore.distanceMeters ?: return null
     val remainingMillis = TimerStore.remainingMillis
     if (remainingMillis <= 0L) return null
@@ -993,16 +1138,13 @@ private fun requiredSpeedKmh(): Double? {
 
 private fun speedImprovementText(currentSpeed: Double?, targetSpeed: Double?): String? {
     if (targetSpeed == null) return null
+    if (targetSpeed <= 0.0) return null
     if (currentSpeed == null || currentSpeed <= 0.1) {
         return if (targetSpeed <= 0.1) "0%" else "+∞"
     }
     val percent = ((targetSpeed / currentSpeed) - 1.0) * 100.0
     val rounded = percent.roundToInt()
     return if (rounded > 0) "+$rounded%" else "$rounded%"
-}
-
-private fun formatSpeed(speed: Double?): String {
-    return if (speed == null) "" else "${speed.roundToInt()} km/h"
 }
 
 private fun formatRemaining(millis: Long): String {
@@ -1015,6 +1157,13 @@ private fun formatRemaining(millis: Long): String {
     } else {
         "%02d:%02d".format(minutes, seconds)
     }
+}
+
+private fun formatPaceInputValue(speedKmh: Double): String {
+    return speedValueFromKmh(speedKmh)?.let { value ->
+        val rounded = (value * 10.0).roundToInt() / 10.0
+        "%.1f".format(rounded)
+    }.orEmpty()
 }
 
 @Preview(showBackground = true)

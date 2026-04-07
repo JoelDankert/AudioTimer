@@ -81,10 +81,15 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         bluetoothWasConnected = TimerStore.bluetoothFailsafeEnabled && isBluetoothAudioConnected()
         soundDisabledForSession = false
         bluetoothMuteManuallyOverridden = false
-        lastSpokenMinute = spokenMinuteBucket(targetTimeMillis - System.currentTimeMillis())
+        val initialRemainingMillis = targetTimeMillis - System.currentTimeMillis()
+        lastSpokenMinute = if (startsOnMinuteBoundary(initialRemainingMillis)) {
+            null
+        } else {
+            spokenMinuteBucket(initialRemainingMillis)
+        }
         lastRouteInfoSpokenAt = 0L
 
-        startForeground(NOTIFICATION_ID, buildNotification(targetTimeMillis - System.currentTimeMillis()))
+        startForeground(NOTIFICATION_ID, buildNotification(initialRemainingMillis))
         handler.removeCallbacks(tick)
         tick.run()
         return START_STICKY
@@ -109,7 +114,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun maybeSpeak(remainingMillis: Long) {
-        val audioMode = TimerStore.audioMode
+        val audioMode = effectiveAudioMode()
         if (audioMode == AudioMode.None || remainingMillis == 0L || !ttsReady) return
 
         if (
@@ -124,18 +129,22 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         if (soundDisabledForSession) return
 
         maybeSpeakRouteInfo(remainingMillis)
+        if (!TimerStore.repeatRemainingTime) return
 
-        val remainingMinutes = spokenMinuteBucket(remainingMillis)
-        if (remainingMinutes == lastSpokenMinute) return
+        val minuteBucket = spokenMinuteBucket(remainingMillis)
+        if (minuteBucket == lastSpokenMinute) return
+
+        val remainingMinutes = spokenMinuteValue(remainingMillis)
         if (!shouldSpeakMinute(remainingMinutes, audioMode)) return
 
-        lastSpokenMinute = remainingMinutes
+        lastSpokenMinute = minuteBucket
         val phrase = "$remainingMinutes, $remainingMinutes, $remainingMinutes"
         tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "remaining-$remainingMinutes")
     }
 
     private fun maybeSpeakRouteInfo(remainingMillis: Long) {
-        if (LocationStore.selectedLocation == null || LocationStore.distanceMeters == null) return
+        if (!TimerStore.speakRouteInfo) return
+        if (!LocationStore.routeActive) return
         if (TimerStore.routeInfoParts.isEmpty()) return
 
         val now = System.currentTimeMillis()
@@ -162,8 +171,26 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun effectiveAudioMode(): AudioMode {
+        return if (TimerStore.useAllIfRouting && LocationStore.routeActive) {
+            AudioMode.All
+        } else {
+            TimerStore.audioMode
+        }
+    }
+
     private fun spokenMinuteBucket(remainingMillis: Long): Long {
         return TimeUnit.MILLISECONDS.toMinutes(remainingMillis).coerceAtLeast(0L)
+    }
+
+    private fun spokenMinuteValue(remainingMillis: Long): Long {
+        return ((remainingMillis.coerceAtLeast(0L) + TimeUnit.MINUTES.toMillis(1) - 1) /
+            TimeUnit.MINUTES.toMillis(1)).coerceAtLeast(0L)
+    }
+
+    private fun startsOnMinuteBoundary(remainingMillis: Long): Boolean {
+        val minuteMillis = TimeUnit.MINUTES.toMillis(1)
+        return remainingMillis > 0L && remainingMillis % minuteMillis >= minuteMillis - 1000L
     }
 
     private fun isBluetoothAudioConnected(): Boolean {
@@ -283,15 +310,16 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private fun formatNotificationText(remainingMillis: Long): String {
         val selected = LocationStore.selectedLocation
         val distance = LocationStore.distanceMeters
-        if (selected == null || distance == null) return formatRemaining(remainingMillis)
+        val targetPace = LocationStore.targetPaceKmh
+        if (selected == null && targetPace == null) return formatRemaining(remainingMillis)
 
         val currentSpeed = LocationStore.currentSpeedKmh
-        val targetSpeed = requiredSpeedKmh(distance, remainingMillis)
+        val targetSpeed = targetPace ?: distance?.let { requiredSpeedKmh(it, remainingMillis) }
         val improvement = speedImprovementText(currentSpeed, targetSpeed)
         return listOf(
             formatRemaining(remainingMillis),
-            "$distance m",
-            "${formatSpeed(currentSpeed)}->${formatSpeed(targetSpeed)}",
+            distance?.let { "$it m" }.orEmpty(),
+            "${formatSpeed(currentSpeed)} → ${formatSpeed(targetSpeed)}",
             improvement.orEmpty()
         ).filter(String::isNotBlank).joinToString("  ")
     }
@@ -303,6 +331,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     private fun speedImprovementText(currentSpeed: Double?, targetSpeed: Double?): String? {
         if (targetSpeed == null) return null
+        if (targetSpeed <= 0.0) return null
         if (currentSpeed == null || currentSpeed <= 0.1) {
             return if (targetSpeed <= 0.1) "0%" else "+∞"
         }
@@ -311,15 +340,11 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         return if (rounded > 0) "+$rounded%" else "$rounded%"
     }
 
-    private fun formatSpeed(speed: Double?): String {
-        return if (speed == null) "" else "${speed.roundToInt()}km/h"
-    }
-
     private fun routeInfoMessage(remainingMillis: Long): String {
         val parts = TimerStore.routeInfoParts
         val distance = LocationStore.distanceMeters
         val currentSpeed = LocationStore.currentSpeedKmh
-        val requiredSpeed = distance?.let { requiredSpeedKmh(it, remainingMillis) }
+        val requiredSpeed = LocationStore.targetPaceKmh ?: distance?.let { requiredSpeedKmh(it, remainingMillis) }
 
         return listOfNotNull(
             if (parts.contains(RouteInfoPart.Meter)) meterMessage(distance) else null,
@@ -341,12 +366,13 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun speedMessage(speed: Double?, suffix: String): String? {
-        if (speed == null) return null
-        return "${speed.roundToInt()} kmh $suffix."
+        val formatted = formatSpeedForSpeech(speed) ?: return null
+        return "$formatted $suffix."
     }
 
     private fun relativeMessage(currentSpeed: Double?, requiredSpeed: Double?): String? {
         if (!currentSpeed.isSpeakingSpeed() || requiredSpeed == null) return null
+        if (requiredSpeed <= 0.0) return null
         val speakingSpeed = currentSpeed ?: return null
         val percent = (((requiredSpeed / speakingSpeed) - 1.0) * 100.0).roundToInt()
         return when {
