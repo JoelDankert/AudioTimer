@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Timemanage" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#07111C</item>
+        <item name="android:colorAccent">#9CCAFF</item>
+        <item name="android:statusBarColor">#07111C</item>
+        <item name="android:navigationBarColor">#07111C</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowSplashScreenBackground">#07111C</item>
+    </style>
+</resources>
