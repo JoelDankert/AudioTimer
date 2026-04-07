@@ -20,7 +20,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 class TimerService : Service(), TextToSpeech.OnInitListener {
@@ -82,7 +81,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         bluetoothWasConnected = TimerStore.bluetoothFailsafeEnabled && isBluetoothAudioConnected()
         soundDisabledForSession = false
         bluetoothMuteManuallyOverridden = false
-        lastSpokenMinute = null
+        lastSpokenMinute = spokenMinuteBucket(targetTimeMillis - System.currentTimeMillis())
         lastRouteInfoSpokenAt = 0L
 
         startForeground(NOTIFICATION_ID, buildNotification(targetTimeMillis - System.currentTimeMillis()))
@@ -126,7 +125,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
         maybeSpeakRouteInfo(remainingMillis)
 
-        val remainingMinutes = ceil(remainingMillis / 60_000.0).toLong()
+        val remainingMinutes = spokenMinuteBucket(remainingMillis)
         if (remainingMinutes == lastSpokenMinute) return
         if (!shouldSpeakMinute(remainingMinutes, audioMode)) return
 
@@ -161,6 +160,10 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
                 else -> remainingMinutes % 30L == 0L
             }
         }
+    }
+
+    private fun spokenMinuteBucket(remainingMillis: Long): Long {
+        return TimeUnit.MILLISECONDS.toMinutes(remainingMillis).coerceAtLeast(0L)
     }
 
     private fun isBluetoothAudioConnected(): Boolean {
