@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -569,8 +568,6 @@ private fun LocationSelector(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        TravelModeToggle(onRefreshDistance)
-        Spacer(modifier = Modifier.width(10.dp))
         RoundAction(
             text = "×",
             background = MaterialTheme.colorScheme.error,
@@ -625,56 +622,6 @@ private fun CollapseArrow(expanded: Boolean) {
             drawLine(color, start = androidx.compose.ui.geometry.Offset(leftX, topY), end = androidx.compose.ui.geometry.Offset(centerX, bottomY), strokeWidth = strokeWidth, cap = StrokeCap.Round)
             drawLine(color, start = androidx.compose.ui.geometry.Offset(centerX, bottomY), end = androidx.compose.ui.geometry.Offset(rightX, topY), strokeWidth = strokeWidth, cap = StrokeCap.Round)
         }
-    }
-}
-
-@Composable
-private fun TravelModeToggle(onRefreshDistance: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .width(160.dp)
-            .height(40.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        TravelModeSegment(
-            text = "walk",
-            selected = LocationStore.travelMode == TravelMode.Walk,
-            modifier = Modifier.weight(1f),
-            onClick = {
-                LocationStore.updateTravelMode(TravelMode.Walk)
-                onRefreshDistance()
-            }
-        )
-        TravelModeSegment(
-            text = "car",
-            selected = LocationStore.travelMode == TravelMode.Car,
-            modifier = Modifier.weight(1f),
-            onClick = {
-                LocationStore.updateTravelMode(TravelMode.Car)
-                onRefreshDistance()
-            }
-        )
-    }
-}
-
-@Composable
-private fun TravelModeSegment(
-    text: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text = text, color = Color.Black)
     }
 }
 
@@ -843,6 +790,15 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 SettingsSectionTitle("route info")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = LocationStore.travelMode == TravelMode.Car,
+                        onCheckedChange = { driving ->
+                            LocationStore.updateTravelMode(if (driving) TravelMode.Car else TravelMode.Walk)
+                        }
+                    )
+                    Text("driving instead of walking")
+                }
                 OutlinedTextField(
                     value = routeIntervalText,
                     onValueChange = { value ->
