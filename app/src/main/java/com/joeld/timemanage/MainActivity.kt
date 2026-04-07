@@ -418,7 +418,7 @@ fun TimerScreen(modifier: Modifier = Modifier) {
         }
         Spacer(modifier = Modifier.height(12.dp))
         Button(onClick = { durationOpen = true }) {
-            Text("absolute time")
+            Text("relative time")
         }
         Spacer(modifier = Modifier.height(20.dp))
         IconButton(onClick = { settingsOpen = true }) {
@@ -903,7 +903,7 @@ private fun DurationDialog(onDismiss: () -> Unit, onStart: (Long) -> Unit) {
                 Text("cancel")
             }
         },
-        title = { Text("absolute time") },
+        title = { Text("relative time") },
         text = {
             DurationPickers(
                 hours = hours,
