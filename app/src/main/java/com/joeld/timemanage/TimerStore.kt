@@ -37,6 +37,7 @@ object TimerStore {
     private const val KEY_AUDIO_MODE = "audio_mode"
     private const val KEY_SPEED_UNIT = "speed_unit"
     private const val KEY_REPEAT_REMAINING_TIME = "repeat_remaining_time"
+    private const val KEY_REPEAT_REMAINING_TIME_THREE_TIMES = "repeat_remaining_time_three_times"
     private const val KEY_SPEAK_ROUTE_INFO = "speak_route_info"
     private const val KEY_USE_ALL_IF_ROUTING = "use_all_if_routing"
     private const val KEY_BLUETOOTH_FAILSAFE = "bluetooth_failsafe"
@@ -47,6 +48,7 @@ object TimerStore {
     private val DEFAULT_AUDIO_MODE = AudioMode.Adaptive
     private val DEFAULT_SPEED_UNIT = SpeedUnit.Kmh
     private const val DEFAULT_REPEAT_REMAINING_TIME = true
+    private const val DEFAULT_REPEAT_REMAINING_TIME_THREE_TIMES = true
     private const val DEFAULT_SPEAK_ROUTE_INFO = true
     private const val DEFAULT_USE_ALL_IF_ROUTING = true
     private const val DEFAULT_BLUETOOTH_FAILSAFE = true
@@ -70,6 +72,9 @@ object TimerStore {
         private set
 
     var repeatRemainingTime by mutableStateOf(DEFAULT_REPEAT_REMAINING_TIME)
+        private set
+
+    var repeatRemainingTimeThreeTimes by mutableStateOf(DEFAULT_REPEAT_REMAINING_TIME_THREE_TIMES)
         private set
 
     var speakRouteInfo by mutableStateOf(DEFAULT_SPEAK_ROUTE_INFO)
@@ -103,6 +108,10 @@ object TimerStore {
         val savedSpeedUnit = prefs.getString(KEY_SPEED_UNIT, DEFAULT_SPEED_UNIT.name)
         speedUnit = SpeedUnit.entries.firstOrNull { it.name == savedSpeedUnit } ?: DEFAULT_SPEED_UNIT
         repeatRemainingTime = prefs.getBoolean(KEY_REPEAT_REMAINING_TIME, DEFAULT_REPEAT_REMAINING_TIME)
+        repeatRemainingTimeThreeTimes = prefs.getBoolean(
+            KEY_REPEAT_REMAINING_TIME_THREE_TIMES,
+            DEFAULT_REPEAT_REMAINING_TIME_THREE_TIMES
+        )
         speakRouteInfo = prefs.getBoolean(KEY_SPEAK_ROUTE_INFO, DEFAULT_SPEAK_ROUTE_INFO)
         useAllIfRouting = prefs.getBoolean(KEY_USE_ALL_IF_ROUTING, DEFAULT_USE_ALL_IF_ROUTING)
         bluetoothFailsafeEnabled = prefs.getBoolean(KEY_BLUETOOTH_FAILSAFE, DEFAULT_BLUETOOTH_FAILSAFE)
@@ -154,6 +163,15 @@ object TimerStore {
             ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             ?.edit()
             ?.putBoolean(KEY_REPEAT_REMAINING_TIME, enabled)
+            ?.apply()
+    }
+
+    fun updateRepeatRemainingTimeThreeTimes(enabled: Boolean) {
+        repeatRemainingTimeThreeTimes = enabled
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_REPEAT_REMAINING_TIME_THREE_TIMES, enabled)
             ?.apply()
     }
 

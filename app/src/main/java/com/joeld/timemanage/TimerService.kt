@@ -38,7 +38,9 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private var lastRouteInfoSpokenAt = 0L
     private var routeLocationListener: LocationListener? = null
     private var lastRouteDistanceFetchAt = 0L
+    private var finalStopScheduled = false
     private val speedSamples = mutableListOf<LocationSample>()
+    private val finalStop = Runnable { stopTimer() }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -48,7 +50,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
             maybeSpeak(remaining)
 
             if (remaining == 0L) {
-                stopTimer()
+                finishTimer()
             } else {
                 handler.postDelayed(this, 1000L)
             }
@@ -106,6 +108,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         bluetoothWasConnected = TimerStore.bluetoothFailsafeEnabled && isBluetoothAudioConnected()
         soundDisabledForSession = false
         bluetoothMuteManuallyOverridden = false
+        finalStopScheduled = false
+        handler.removeCallbacks(finalStop)
         val initialRemainingMillis = targetTimeMillis - System.currentTimeMillis()
         lastSpokenMinute = if (startsOnMinuteBoundary(initialRemainingMillis)) {
             null
@@ -276,6 +280,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         TimerStore.markRouteEstimateTimer(true)
         targetTimeMillis = System.currentTimeMillis() + durationSeconds * 1000L
         lastSpokenMinute = spokenMinuteBucket(targetTimeMillis - System.currentTimeMillis())
+        finalStopScheduled = false
+        handler.removeCallbacks(finalStop)
         handler.removeCallbacks(tick)
         tick.run()
     }
@@ -324,8 +330,28 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         if (!shouldSpeakMinute(remainingMinutes, audioMode)) return
 
         lastSpokenMinute = minuteBucket
-        val phrase = "$remainingMinutes, $remainingMinutes, $remainingMinutes"
+        speakRemainingTime(remainingMinutes)
+    }
+
+    private fun speakRemainingTime(remainingMinutes: Long) {
+        if (!TimerStore.repeatRemainingTime || !ttsReady || soundDisabledForSession) return
+        val phrase = if (TimerStore.repeatRemainingTimeThreeTimes) {
+            "$remainingMinutes, $remainingMinutes, $remainingMinutes"
+        } else {
+            remainingMinutes.toString()
+        }
         tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "remaining-$remainingMinutes")
+    }
+
+    private fun finishTimer() {
+        if (finalStopScheduled) return
+        finalStopScheduled = true
+        speakRemainingTime(0L)
+        if (TimerStore.repeatRemainingTime && ttsReady && !soundDisabledForSession) {
+            handler.postDelayed(finalStop, FINAL_SPEECH_STOP_DELAY_MS)
+        } else {
+            stopTimer()
+        }
     }
 
     private fun maybeSpeakRouteInfo(remainingMillis: Long) {
@@ -461,6 +487,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     private fun stopTimer() {
         handler.removeCallbacks(tick)
+        handler.removeCallbacks(finalStop)
+        finalStopScheduled = false
         TimerStore.setRemaining(0L)
         LocationStore.clearSelection()
         stopRouteTracking(notify = false)
@@ -612,6 +640,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         const val EXTRA_ROUTE_ESTIMATE_TIMER = "route_estimate_timer"
         private const val CHANNEL_ID = "timer"
         private const val NOTIFICATION_ID = 1
+        private const val FINAL_SPEECH_STOP_DELAY_MS = 2500L
         private const val REQUEST_STOP = 2
         private const val REQUEST_MUTE = 3
     }

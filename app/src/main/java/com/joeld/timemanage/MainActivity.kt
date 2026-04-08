@@ -701,6 +701,13 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                     )
                     Text("use all if routing")
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = TimerStore.repeatRemainingTimeThreeTimes,
+                        onCheckedChange = { TimerStore.updateRepeatRemainingTimeThreeTimes(it) }
+                    )
+                    Text("repeat three times")
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 SettingsSectionTitle("route info")
                 Row(verticalAlignment = Alignment.CenterVertically) {
