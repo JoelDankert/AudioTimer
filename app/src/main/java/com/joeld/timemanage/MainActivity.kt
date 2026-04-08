@@ -580,8 +580,12 @@ private fun LocationSelector(
 ) {
     val locationRowHeight = 40.dp
     val locationRowGap = 6.dp
-    val visibleLocationRows = 4
-    val locationListHeight = locationRowHeight * visibleLocationRows + locationRowGap * (visibleLocationRows - 1)
+    val visibleLocationRows = LocationStore.locations.size.coerceAtMost(4)
+    val locationListHeight = if (visibleLocationRows == 0) {
+        0.dp
+    } else {
+        locationRowHeight * visibleLocationRows + locationRowGap * (visibleLocationRows - 1)
+    }
 
     Spacer(modifier = Modifier.height(8.dp))
     IconButton(onClick = { LocationStore.updateExpanded(!LocationStore.expanded) }) {
