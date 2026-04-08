@@ -257,16 +257,15 @@ class MainActivity : ComponentActivity() {
         val now = System.currentTimeMillis()
         if (location.hasAccuracy() && location.accuracy > 25f) return
 
-        if (location.hasSpeed()) {
-            LocationStore.updateCurrentSpeedKmh(location.speed * 3.6)
-        }
+        val nativeSpeedKmh = if (location.hasSpeed()) location.speed * 3.6 else null
 
         speedSamples += LocationSample(now, location.latitude, location.longitude)
         speedSamples.removeAll { now - it.timeMillis > 5_000L }
 
         val oldest = speedSamples.firstOrNull()
         val newest = speedSamples.lastOrNull()
-        if (!location.hasSpeed() && oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
+        var windowSpeedKmh: Double? = null
+        if (oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
             val distance = FloatArray(1)
             Location.distanceBetween(
                 oldest.latitude,
@@ -276,7 +275,11 @@ class MainActivity : ComponentActivity() {
                 distance
             )
             val hours = (newest.timeMillis - oldest.timeMillis) / 3_600_000.0
-            LocationStore.updateCurrentSpeedKmh(distance[0] / 1000.0 / hours)
+            windowSpeedKmh = distance[0] / 1000.0 / hours
+        }
+        val speedKmh = if (nativeSpeedKmh != null && nativeSpeedKmh < 1.0) nativeSpeedKmh else windowSpeedKmh
+        if (speedKmh != null) {
+            LocationStore.updateCurrentSpeedKmh(speedKmh)
         }
 
         val selected = LocationStore.selectedLocation ?: return

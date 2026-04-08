@@ -382,7 +382,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun Double?.isSpeakingSpeed(): Boolean {
-        return this != null && this >= 2.0
+        return this != null && this >= 1.0
     }
 
     companion object {
