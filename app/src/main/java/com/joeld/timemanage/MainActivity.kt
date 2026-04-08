@@ -399,7 +399,7 @@ private fun LocationSelector(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             RoundAction(
                 text = "+",
