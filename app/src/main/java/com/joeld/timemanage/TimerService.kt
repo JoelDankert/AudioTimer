@@ -75,9 +75,13 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
             return START_STICKY
         }
         if (intent?.action == ACTION_ROUTE_STOP) {
-            stopRouteTracking()
-            return if (TimerStore.remainingMillis > 0L) START_STICKY else {
-                stopTimer()
+            LocationStore.clearSelection()
+            stopRouteTracking(notify = false)
+            return if (TimerStore.remainingMillis > 0L || LocationStore.routeActive) {
+                updateNotification(TimerStore.remainingMillis)
+                START_STICKY
+            } else {
+                stopForegroundNotification()
                 START_NOT_STICKY
             }
         }
@@ -460,13 +464,17 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         TimerStore.setRemaining(0L)
         LocationStore.clearSelection()
         stopRouteTracking(notify = false)
+        stopForegroundNotification()
+        stopSelf()
+    }
+
+    private fun stopForegroundNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
-        stopSelf()
     }
 
     private fun ensureNotificationChannel() {
