@@ -360,8 +360,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     private fun meterMessage(distanceMeters: Int?): String? {
         if (distanceMeters == null) return null
-        val step = if (distanceMeters < 100) 10 else 100
-        val rounded = ((distanceMeters.toDouble() / step).roundToInt() * step).coerceAtLeast(0)
+        val rounded = ((distanceMeters.toDouble() / 10).roundToInt() * 10).coerceAtLeast(0)
         return "$rounded meter."
     }
 

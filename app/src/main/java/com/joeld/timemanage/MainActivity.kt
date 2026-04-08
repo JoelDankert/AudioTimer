@@ -255,12 +255,18 @@ class MainActivity : ComponentActivity() {
 
     private fun handleRouteLocation(location: Location) {
         val now = System.currentTimeMillis()
+        if (location.hasAccuracy() && location.accuracy > 25f) return
+
+        if (location.hasSpeed()) {
+            LocationStore.updateCurrentSpeedKmh(location.speed * 3.6)
+        }
+
         speedSamples += LocationSample(now, location.latitude, location.longitude)
         speedSamples.removeAll { now - it.timeMillis > 5_000L }
 
         val oldest = speedSamples.firstOrNull()
         val newest = speedSamples.lastOrNull()
-        if (oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
+        if (!location.hasSpeed() && oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
             val distance = FloatArray(1)
             Location.distanceBetween(
                 oldest.latitude,

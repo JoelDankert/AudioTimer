@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: build-${{ github.sha }}
+        run: |
+          gh release create "$TAG_NAME" \
+            app/build/outputs/apk/debug/app-debug.apk \
+            --title "Build ${GITHUB_SHA::7}" \
+            --notes "Automated build for commit ${GITHUB_SHA}." \
+            --target "$GITHUB_SHA"
