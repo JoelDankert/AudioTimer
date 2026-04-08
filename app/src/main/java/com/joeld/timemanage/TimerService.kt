@@ -308,19 +308,36 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun formatNotificationText(remainingMillis: Long): String {
+        val parts = TimerStore.notificationParts
         val selected = LocationStore.selectedLocation
         val distance = LocationStore.distanceMeters
         val targetPace = LocationStore.targetPaceKmh
-        if (selected == null && targetPace == null) return formatRemaining(remainingMillis)
+        if (selected == null && targetPace == null) {
+            return if (parts.contains(NotificationPart.Remaining)) formatRemaining(remainingMillis) else ""
+        }
 
         val currentSpeed = LocationStore.currentSpeedKmh
         val targetSpeed = targetPace ?: distance?.let { requiredSpeedKmh(it, remainingMillis) }
         val improvement = speedImprovementText(currentSpeed, targetSpeed)
+        val currentSpeedText = if (parts.contains(NotificationPart.Current)) {
+            formatSpeed(currentSpeed)
+        } else {
+            ""
+        }
+        val targetSpeedText = if (parts.contains(NotificationPart.Required)) {
+            formatSpeed(targetSpeed)
+        } else {
+            ""
+        }
+        val speedText = if (currentSpeedText.isNotBlank() && targetSpeedText.isNotBlank()) {
+            "$currentSpeedText → $targetSpeedText"
+        } else {
+            listOf(currentSpeedText, targetSpeedText).filter(String::isNotBlank).joinToString("  ")
+        }
         return listOf(
-            formatRemaining(remainingMillis),
-            distance?.let { "$it m" }.orEmpty(),
-            "${formatSpeed(currentSpeed)} → ${formatSpeed(targetSpeed)}",
-            improvement.orEmpty()
+            if (parts.contains(NotificationPart.Remaining)) formatRemaining(remainingMillis) else "",
+            speedText,
+            if (parts.contains(NotificationPart.Relative)) improvement.orEmpty() else ""
         ).filter(String::isNotBlank).joinToString("  ")
     }
 

@@ -951,6 +951,17 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
                     )
                     Text("relative only if positive")
                 }
+                Spacer(modifier = Modifier.height(12.dp))
+                SettingsSectionTitle("notification")
+                NotificationPart.entries.forEach { part ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = TimerStore.notificationParts.contains(part),
+                            onCheckedChange = { TimerStore.updateNotificationPart(part, it) }
+                        )
+                        Text(part.label)
+                    }
+                }
             }
         }
     )

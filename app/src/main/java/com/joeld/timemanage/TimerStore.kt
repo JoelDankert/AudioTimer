@@ -19,6 +19,13 @@ enum class RouteInfoPart(val label: String) {
     Relative("relative"),
 }
 
+enum class NotificationPart(val label: String) {
+    Remaining("remaining"),
+    Current("current speed"),
+    Required("needed speed"),
+    Relative("relative"),
+}
+
 enum class SpeedUnit(val label: String, val speechLabel: String) {
     Kmh("km/h", "kmh"),
     MinPerKm("min/km", "minutes per km"),
@@ -36,6 +43,7 @@ object TimerStore {
     private const val KEY_ROUTE_INFO_INTERVAL_SECONDS = "route_info_interval_seconds"
     private const val KEY_ROUTE_INFO_PARTS = "route_info_parts"
     private const val KEY_RELATIVE_ONLY_IF_POSITIVE = "relative_only_if_positive"
+    private const val KEY_NOTIFICATION_PARTS = "notification_parts"
     private val DEFAULT_AUDIO_MODE = AudioMode.Adaptive
     private val DEFAULT_SPEED_UNIT = SpeedUnit.Kmh
     private const val DEFAULT_REPEAT_REMAINING_TIME = true
@@ -45,6 +53,12 @@ object TimerStore {
     private const val DEFAULT_ROUTE_INFO_INTERVAL_SECONDS = 10
     private const val DEFAULT_RELATIVE_ONLY_IF_POSITIVE = true
     private val DEFAULT_ROUTE_INFO_PARTS = setOf(RouteInfoPart.Relative)
+    private val DEFAULT_NOTIFICATION_PARTS = setOf(
+        NotificationPart.Remaining,
+        NotificationPart.Current,
+        NotificationPart.Required,
+        NotificationPart.Relative
+    )
 
     var remainingMillis by mutableLongStateOf(0L)
         private set
@@ -79,6 +93,9 @@ object TimerStore {
     var relativeOnlyIfPositive by mutableStateOf(DEFAULT_RELATIVE_ONLY_IF_POSITIVE)
         private set
 
+    var notificationParts by mutableStateOf(DEFAULT_NOTIFICATION_PARTS)
+        private set
+
     fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = prefs.getString(KEY_AUDIO_MODE, DEFAULT_AUDIO_MODE.name)
@@ -104,6 +121,13 @@ object TimerStore {
             KEY_RELATIVE_ONLY_IF_POSITIVE,
             DEFAULT_RELATIVE_ONLY_IF_POSITIVE
         )
+        val savedNotificationParts = prefs.getString(KEY_NOTIFICATION_PARTS, null)
+        notificationParts = savedNotificationParts
+            ?.split(",")
+            ?.mapNotNull { savedPart -> NotificationPart.entries.firstOrNull { it.name == savedPart } }
+            ?.toSet()
+            ?.takeIf { it.isNotEmpty() }
+            ?: DEFAULT_NOTIFICATION_PARTS
     }
 
     fun updateAudioMode(mode: AudioMode) {
@@ -185,6 +209,16 @@ object TimerStore {
             ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             ?.edit()
             ?.putBoolean(KEY_RELATIVE_ONLY_IF_POSITIVE, enabled)
+            ?.apply()
+    }
+
+    fun updateNotificationPart(part: NotificationPart, enabled: Boolean) {
+        val updated = if (enabled) notificationParts + part else notificationParts - part
+        notificationParts = updated
+        App.instance
+            ?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString(KEY_NOTIFICATION_PARTS, notificationParts.joinToString(",") { it.name })
             ?.apply()
     }
 
