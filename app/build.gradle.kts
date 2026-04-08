@@ -21,7 +21,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("ciDebug") {
+            storeFile = file("ci-debug.keystore")
+            storePassword = "android"
+            keyAlias = "ci-debug"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("ciDebug")
+        }
+
         release {
             isMinifyEnabled = false
             proguardFiles(
