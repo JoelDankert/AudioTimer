@@ -9,6 +9,9 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
@@ -20,6 +23,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 class TimerService : Service(), TextToSpeech.OnInitListener {
@@ -32,6 +36,9 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private var bluetoothMuteManuallyOverridden = false
     private var lastSpokenMinute: Long? = null
     private var lastRouteInfoSpokenAt = 0L
+    private var routeLocationListener: LocationListener? = null
+    private var lastRouteDistanceFetchAt = 0L
+    private val speedSamples = mutableListOf<LocationSample>()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -57,8 +64,22 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             TimerStore.markRouteEstimateTimer(false)
+            LocationStore.clearSelection()
+            stopRouteTracking(notify = false)
             stopTimer()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_ROUTE_START) {
+            startRouteForeground()
+            startRouteTracking()
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_ROUTE_STOP) {
+            stopRouteTracking()
+            return if (TimerStore.remainingMillis > 0L) START_STICKY else {
+                stopTimer()
+                START_NOT_STICKY
+            }
         }
         if (intent?.action == ACTION_MUTE) {
             muteTimer()
@@ -92,6 +113,9 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         startForeground(NOTIFICATION_ID, buildNotification(initialRemainingMillis))
         handler.removeCallbacks(tick)
         tick.run()
+        if (LocationStore.routeActive) {
+            startRouteTracking()
+        }
         return START_STICKY
     }
 
@@ -106,11 +130,169 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
+        stopRouteTracking(notify = false)
         tts?.stop()
         tts?.shutdown()
         tts = null
         ttsReady = false
         super.onDestroy()
+    }
+
+    private fun startRouteForeground() {
+        startForeground(NOTIFICATION_ID, buildNotification(TimerStore.remainingMillis))
+        updateNotification(TimerStore.remainingMillis)
+    }
+
+    @Suppress("MissingPermission")
+    private fun startRouteTracking() {
+        if (!LocationStore.routeActive) {
+            stopRouteTracking()
+            return
+        }
+        if (!hasLocationPermission()) {
+            LocationStore.setDistanceError("location denied")
+            return
+        }
+
+        stopRouteTracking(clearSpeed = false)
+        speedSamples.clear()
+        lastRouteDistanceFetchAt = 0L
+
+        val locationManager = getSystemService(LocationManager::class.java)
+        val provider = bestEnabledProvider(locationManager)
+        if (provider == null) {
+            LocationStore.setDistanceError("location unavailable")
+            updateNotification(TimerStore.remainingMillis)
+            return
+        }
+
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                handleRouteLocation(location)
+            }
+        }
+        routeLocationListener = listener
+
+        runCatching {
+            LocationStore.selectedLocation?.let { LocationStore.setDistanceLoading() }
+            locationManager.requestLocationUpdates(provider, 2_000L, 1f, listener, Looper.getMainLooper())
+            locationManager.getLastKnownLocation(provider)?.let(::handleRouteLocation)
+        }.onFailure {
+            stopRouteTracking()
+            LocationStore.setDistanceError("location unavailable")
+            updateNotification(TimerStore.remainingMillis)
+        }
+    }
+
+    private fun stopRouteTracking(clearSpeed: Boolean = true, notify: Boolean = true) {
+        routeLocationListener?.let { listener ->
+            runCatching { getSystemService(LocationManager::class.java).removeUpdates(listener) }
+        }
+        routeLocationListener = null
+        speedSamples.clear()
+        if (clearSpeed) {
+            LocationStore.updateCurrentSpeedKmh(null)
+        }
+        if (notify) {
+            updateNotification(TimerStore.remainingMillis)
+        }
+    }
+
+    private fun handleRouteLocation(location: Location) {
+        val now = System.currentTimeMillis()
+        if (location.hasAccuracy() && location.accuracy > 25f) return
+
+        val nativeSpeedKmh = if (location.hasSpeed()) location.speed * 3.6 else null
+
+        speedSamples += LocationSample(now, location.latitude, location.longitude)
+        speedSamples.removeAll { now - it.timeMillis > 5_000L }
+
+        val oldest = speedSamples.firstOrNull()
+        val newest = speedSamples.lastOrNull()
+        var windowSpeedKmh: Double? = null
+        if (oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
+            val distance = FloatArray(1)
+            Location.distanceBetween(
+                oldest.latitude,
+                oldest.longitude,
+                newest.latitude,
+                newest.longitude,
+                distance
+            )
+            val hours = (newest.timeMillis - oldest.timeMillis) / 3_600_000.0
+            windowSpeedKmh = distance[0] / 1000.0 / hours
+        }
+        val speedKmh = if (nativeSpeedKmh != null && nativeSpeedKmh < 1.0) nativeSpeedKmh else windowSpeedKmh
+        if (speedKmh != null) {
+            LocationStore.updateCurrentSpeedKmh(speedKmh)
+            updateNotification(TimerStore.remainingMillis)
+        }
+
+        val selected = LocationStore.selectedLocation ?: return
+        val mode = LocationStore.travelMode
+        if (now - lastRouteDistanceFetchAt < 15_000L) return
+        lastRouteDistanceFetchAt = now
+
+        thread {
+            runCatching {
+                LocationApi.routeEstimate(
+                    currentLatitude = location.latitude,
+                    currentLongitude = location.longitude,
+                    destination = selected,
+                    mode = mode
+                )
+            }.onSuccess { estimate ->
+                handler.post {
+                    if (LocationStore.selectedLocationId == selected.id && LocationStore.travelMode == mode) {
+                        applyRouteEstimate(estimate)
+                    }
+                }
+            }.onFailure {
+                handler.post {
+                    LocationStore.setDistanceError("distance unavailable")
+                    updateNotification(TimerStore.remainingMillis)
+                }
+            }
+        }
+    }
+
+    private fun applyRouteEstimate(estimate: RouteEstimate) {
+        if (estimate.distanceMeters <= 50) {
+            LocationStore.clearSelection()
+            stopRouteTracking()
+            return
+        }
+        startTimerFromRouteEstimateIfIdle(estimate.durationSeconds)
+        LocationStore.setDistance(estimate.distanceMeters)
+        updateNotification(TimerStore.remainingMillis)
+    }
+
+    private fun startTimerFromRouteEstimateIfIdle(durationSeconds: Int) {
+        if (TimerStore.remainingMillis > 0L || durationSeconds <= 0) return
+        TimerStore.markRouteEstimateTimer(true)
+        targetTimeMillis = System.currentTimeMillis() + durationSeconds * 1000L
+        lastSpokenMinute = spokenMinuteBucket(targetTimeMillis - System.currentTimeMillis())
+        handler.removeCallbacks(tick)
+        tick.run()
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun bestEnabledProvider(locationManager: LocationManager): String? {
+        return enabledProviders(locationManager).firstOrNull()
+    }
+
+    private fun enabledProviders(locationManager: LocationManager): List<String> {
+        return listOf(
+            LocationManager.GPS_PROVIDER,
+            LocationManager.NETWORK_PROVIDER,
+            LocationManager.PASSIVE_PROVIDER
+        ).filter { provider ->
+            runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)
+        }
     }
 
     private fun maybeSpeak(remainingMillis: Long) {
@@ -245,7 +427,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
                     REQUEST_MUTE
                 )
             )
-            .setOngoing(remainingMillis > 0L)
+            .setOngoing(remainingMillis > 0L || LocationStore.routeActive)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -276,6 +458,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private fun stopTimer() {
         handler.removeCallbacks(tick)
         TimerStore.setRemaining(0L)
+        LocationStore.clearSelection()
+        stopRouteTracking(notify = false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -402,11 +586,19 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         return this != null && this >= 1.0
     }
 
+    private data class LocationSample(
+        val timeMillis: Long,
+        val latitude: Double,
+        val longitude: Double
+    )
+
     companion object {
         const val ACTION_START = "com.joeld.timemanage.START"
         const val ACTION_STOP = "com.joeld.timemanage.STOP"
         const val ACTION_MUTE = "com.joeld.timemanage.MUTE"
         const val ACTION_UNMUTE = "com.joeld.timemanage.UNMUTE"
+        const val ACTION_ROUTE_START = "com.joeld.timemanage.ROUTE_START"
+        const val ACTION_ROUTE_STOP = "com.joeld.timemanage.ROUTE_STOP"
         const val EXTRA_TARGET_TIME_MILLIS = "target_time_millis"
         const val EXTRA_AUDIO_MODE = "audio_mode"
         const val EXTRA_ROUTE_ESTIMATE_TIMER = "route_estimate_timer"

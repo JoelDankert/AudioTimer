@@ -5,12 +5,8 @@ import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -79,11 +75,7 @@ import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private var pendingTargetTimeMillis: Long? = null
-    private var pendingLocationRefresh = false
     private var pendingRouteTracking = false
-    private var routeLocationListener: LocationListener? = null
-    private var lastRouteDistanceFetchAt = 0L
-    private val speedSamples = mutableListOf<LocationSample>()
     private val timerPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             pendingTargetTimeMillis?.let(::startTimerNow)
@@ -91,15 +83,10 @@ class MainActivity : ComponentActivity() {
         }
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            if (grants.values.any { it } && pendingLocationRefresh) {
-                pendingLocationRefresh = false
-                refreshSelectedDistance()
-                if (pendingRouteTracking) {
-                    pendingRouteTracking = false
-                    startRouteTracking()
-                }
+            if (grants.values.any { it } && pendingRouteTracking) {
+                pendingRouteTracking = false
+                startRouteTracking()
             } else {
-                pendingLocationRefresh = false
                 pendingRouteTracking = false
                 LocationStore.setDistanceError("location denied")
             }
@@ -148,18 +135,12 @@ class MainActivity : ComponentActivity() {
         startTimer(this, targetTimeMillis)
     }
 
-    private fun startRouteEstimateTimer(targetTimeMillis: Long) {
-        TimerStore.markRouteEstimateTimer(true)
-        startTimer(this, targetTimeMillis, routeEstimateTimer = true)
-    }
-
     fun startRouteTracking() {
         if (!LocationStore.routeActive) {
             stopRouteTracking()
             return
         }
         if (!hasLocationPermission()) {
-            pendingLocationRefresh = true
             pendingRouteTracking = true
             locationPermissionLauncher.launch(
                 arrayOf(
@@ -170,154 +151,15 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopRouteTracking(clearSpeed = false)
-        speedSamples.clear()
-        lastRouteDistanceFetchAt = 0L
-
-        val locationManager = getSystemService(LocationManager::class.java)
-        val provider = bestEnabledProvider(locationManager)
-        if (provider == null) {
-            LocationStore.setDistanceError("location unavailable")
-            return
-        }
-
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                handleRouteLocation(location)
-            }
-        }
-        routeLocationListener = listener
-
-        @Suppress("MissingPermission")
-        runCatching {
-            locationManager.requestLocationUpdates(provider, 2_000L, 1f, listener, Looper.getMainLooper())
-            locationManager.getLastKnownLocation(provider)?.let(::handleRouteLocation)
-        }.onFailure {
-            stopRouteTracking()
-            LocationStore.setDistanceError("location unavailable")
-        }
+        startRouteService(this, TimerService.ACTION_ROUTE_START)
     }
 
-    fun stopRouteTracking(clearSpeed: Boolean = true) {
-        routeLocationListener?.let { listener ->
-            runCatching { getSystemService(LocationManager::class.java).removeUpdates(listener) }
-        }
-        routeLocationListener = null
-        speedSamples.clear()
-        if (clearSpeed) {
-            LocationStore.updateCurrentSpeedKmh(null)
-        }
+    fun stopRouteTracking() {
+        startRouteService(this, TimerService.ACTION_ROUTE_STOP)
     }
 
     fun refreshSelectedDistance() {
-        val selected = LocationStore.selectedLocation ?: return
-        val mode = LocationStore.travelMode
-        if (!hasLocationPermission()) {
-            pendingLocationRefresh = true
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
-            return
-        }
-
-        LocationStore.setDistanceLoading()
-        currentLocation { current ->
-            if (current == null) {
-                LocationStore.setDistanceError("location unavailable")
-                return@currentLocation
-            }
-
-            thread {
-                runCatching {
-                    LocationApi.routeEstimate(
-                        currentLatitude = current.latitude,
-                        currentLongitude = current.longitude,
-                        destination = selected,
-                        mode = mode
-                    )
-                }.onSuccess { estimate ->
-                    runOnUiThread {
-                        if (LocationStore.selectedLocationId == selected.id && LocationStore.travelMode == mode) {
-                            applyRouteEstimate(estimate)
-                        }
-                    }
-                }.onFailure {
-                    runOnUiThread {
-                        LocationStore.setDistanceError("distance unavailable")
-                    }
-                }
-            }
-        }
-    }
-
-    private fun handleRouteLocation(location: Location) {
-        val now = System.currentTimeMillis()
-        if (location.hasAccuracy() && location.accuracy > 25f) return
-
-        val nativeSpeedKmh = if (location.hasSpeed()) location.speed * 3.6 else null
-
-        speedSamples += LocationSample(now, location.latitude, location.longitude)
-        speedSamples.removeAll { now - it.timeMillis > 5_000L }
-
-        val oldest = speedSamples.firstOrNull()
-        val newest = speedSamples.lastOrNull()
-        var windowSpeedKmh: Double? = null
-        if (oldest != null && newest != null && newest.timeMillis > oldest.timeMillis) {
-            val distance = FloatArray(1)
-            Location.distanceBetween(
-                oldest.latitude,
-                oldest.longitude,
-                newest.latitude,
-                newest.longitude,
-                distance
-            )
-            val hours = (newest.timeMillis - oldest.timeMillis) / 3_600_000.0
-            windowSpeedKmh = distance[0] / 1000.0 / hours
-        }
-        val speedKmh = if (nativeSpeedKmh != null && nativeSpeedKmh < 1.0) nativeSpeedKmh else windowSpeedKmh
-        if (speedKmh != null) {
-            LocationStore.updateCurrentSpeedKmh(speedKmh)
-        }
-
-        val selected = LocationStore.selectedLocation ?: return
-        val mode = LocationStore.travelMode
-        if (now - lastRouteDistanceFetchAt < 15_000L) return
-        lastRouteDistanceFetchAt = now
-
-        thread {
-            runCatching {
-                LocationApi.routeEstimate(
-                    currentLatitude = location.latitude,
-                    currentLongitude = location.longitude,
-                    destination = selected,
-                    mode = mode
-                )
-            }.onSuccess { estimate ->
-                runOnUiThread {
-                    if (LocationStore.selectedLocationId == selected.id && LocationStore.travelMode == mode) {
-                        applyRouteEstimate(estimate)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun applyRouteEstimate(estimate: RouteEstimate) {
-        if (estimate.distanceMeters <= 50) {
-            LocationStore.clearSelection()
-            stopRouteTracking()
-            return
-        }
-        startTimerFromRouteEstimateIfIdle(estimate.durationSeconds)
-        LocationStore.setDistance(estimate.distanceMeters)
-    }
-
-    private fun startTimerFromRouteEstimateIfIdle(durationSeconds: Int) {
-        if (TimerStore.remainingMillis > 0L || durationSeconds <= 0) return
-        startRouteEstimateTimer(System.currentTimeMillis() + durationSeconds * 1000L)
+        startRouteTracking()
     }
 
     private fun hasLocationPermission(): Boolean {
@@ -325,62 +167,6 @@ class MainActivity : ComponentActivity() {
             hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 
-    @Suppress("MissingPermission")
-    private fun currentLocation(callback: (Location?) -> Unit) {
-        val locationManager = getSystemService(LocationManager::class.java)
-        val providers = enabledProviders(locationManager)
-
-        val lastKnown = providers
-            .mapNotNull { provider -> runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull() }
-            .maxByOrNull { it.time }
-        if (lastKnown != null) {
-            callback(lastKnown)
-            return
-        }
-
-        val provider = providers.firstOrNull()
-        if (provider == null) {
-            callback(null)
-            return
-        }
-
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                callback(location)
-                locationManager.removeUpdates(this)
-            }
-        }
-        runCatching {
-            locationManager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
-        }.onFailure {
-            callback(null)
-        }
-    }
-
-    private fun bestEnabledProvider(locationManager: LocationManager): String? {
-        return enabledProviders(locationManager).firstOrNull()
-    }
-
-    private fun enabledProviders(locationManager: LocationManager): List<String> {
-        return listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
-            LocationManager.PASSIVE_PROVIDER
-        ).filter { provider ->
-            runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)
-        }
-    }
-
-    override fun onDestroy() {
-        stopRouteTracking()
-        super.onDestroy()
-    }
-
-    private data class LocationSample(
-        val timeMillis: Long,
-        val latitude: Double,
-        val longitude: Double
-    )
 }
 
 @Composable
@@ -1150,6 +936,15 @@ private fun stopTimer(context: Context) {
         Intent(context, TimerService::class.java)
             .setAction(TimerService.ACTION_STOP)
     )
+}
+
+private fun startRouteService(context: Context, action: String) {
+    val intent = Intent(context, TimerService::class.java).setAction(action)
+    if (action == TimerService.ACTION_ROUTE_START) {
+        ContextCompat.startForegroundService(context, intent)
+    } else {
+        context.startService(intent)
+    }
 }
 
 private fun requiredSpeedKmh(): Double? {
