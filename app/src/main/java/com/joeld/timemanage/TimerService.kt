@@ -9,6 +9,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -41,6 +42,13 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private var finalStopScheduled = false
     private val speedSamples = mutableListOf<LocationSample>()
     private val finalStop = Runnable { stopTimer() }
+    private val routeInfoTick = object : Runnable {
+        override fun run() {
+            if (!LocationStore.routeActive) return
+            maybeSpeakRouteInfo(TimerStore.remainingMillis)
+            handler.postDelayed(this, ROUTE_INFO_TICK_MS)
+        }
+    }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -72,12 +80,17 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_ROUTE_START) {
-            startRouteForeground()
+            if (!startRouteForeground()) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
             startRouteTracking()
+            startRouteInfoLoop()
             return START_STICKY
         }
         if (intent?.action == ACTION_ROUTE_STOP) {
             LocationStore.clearSelection()
+            stopRouteInfoLoop()
             stopRouteTracking(notify = false)
             return if (TimerStore.remainingMillis > 0L || LocationStore.routeActive) {
                 updateNotification(TimerStore.remainingMillis)
@@ -118,11 +131,12 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         }
         lastRouteInfoSpokenAt = 0L
 
-        startForeground(NOTIFICATION_ID, buildNotification(initialRemainingMillis))
+        startTimerForeground(initialRemainingMillis)
         handler.removeCallbacks(tick)
         tick.run()
         if (LocationStore.routeActive) {
             startRouteTracking()
+            startRouteInfoLoop()
         }
         return START_STICKY
     }
@@ -138,6 +152,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
+        stopRouteInfoLoop()
         stopRouteTracking(notify = false)
         tts?.stop()
         tts?.shutdown()
@@ -146,9 +161,41 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         super.onDestroy()
     }
 
-    private fun startRouteForeground() {
-        startForeground(NOTIFICATION_ID, buildNotification(TimerStore.remainingMillis))
+    private fun startTimerForeground(remainingMillis: Long) {
+        startForegroundForCurrentState(remainingMillis, includeLocation = false)
+    }
+
+    private fun startRouteForeground(): Boolean {
+        if (!hasLocationPermission()) {
+            LocationStore.setDistanceError("location denied")
+            updateNotification(TimerStore.remainingMillis)
+            return false
+        }
+        startForegroundForCurrentState(TimerStore.remainingMillis, includeLocation = true)
         updateNotification(TimerStore.remainingMillis)
+        return true
+    }
+
+    private fun startForegroundForCurrentState(remainingMillis: Long, includeLocation: Boolean) {
+        val notification = buildNotification(remainingMillis)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, foregroundServiceType(includeLocation))
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun foregroundServiceType(includeLocation: Boolean): Int {
+        val baseType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        return if (includeLocation && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            baseType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        } else {
+            baseType
+        }
     }
 
     @Suppress("MissingPermission")
@@ -267,6 +314,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private fun applyRouteEstimate(estimate: RouteEstimate) {
         if (estimate.distanceMeters <= 50) {
             LocationStore.clearSelection()
+            stopRouteInfoLoop()
             stopRouteTracking()
             return
         }
@@ -320,7 +368,6 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         }
         if (soundDisabledForSession) return
 
-        maybeSpeakRouteInfo(remainingMillis)
         if (!TimerStore.repeatRemainingTime) return
 
         val minuteBucket = spokenMinuteBucket(remainingMillis)
@@ -355,9 +402,22 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun maybeSpeakRouteInfo(remainingMillis: Long) {
+        if (!ttsReady) return
+        if (soundDisabledForSession) return
         if (!TimerStore.speakRouteInfo) return
         if (!LocationStore.routeActive) return
         if (TimerStore.routeInfoParts.isEmpty()) return
+
+        if (
+            TimerStore.bluetoothFailsafeEnabled &&
+            bluetoothWasConnected &&
+            !bluetoothMuteManuallyOverridden &&
+            !isBluetoothAudioConnected()
+        ) {
+            soundDisabledForSession = true
+            updateNotification(remainingMillis)
+            return
+        }
 
         val now = System.currentTimeMillis()
         val intervalMillis = TimerStore.routeInfoIntervalSeconds.coerceAtLeast(5) * 1000L
@@ -368,6 +428,15 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
         lastRouteInfoSpokenAt = now
         tts?.speak(message, TextToSpeech.QUEUE_ADD, null, "route-info-$now")
+    }
+
+    private fun startRouteInfoLoop() {
+        handler.removeCallbacks(routeInfoTick)
+        routeInfoTick.run()
+    }
+
+    private fun stopRouteInfoLoop() {
+        handler.removeCallbacks(routeInfoTick)
     }
 
     private fun shouldSpeakMinute(remainingMinutes: Long, audioMode: AudioMode): Boolean {
@@ -491,6 +560,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         finalStopScheduled = false
         TimerStore.setRemaining(0L)
         LocationStore.clearSelection()
+        stopRouteInfoLoop()
         stopRouteTracking(notify = false)
         stopForegroundNotification()
         stopSelf()
@@ -641,6 +711,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         private const val CHANNEL_ID = "timer"
         private const val NOTIFICATION_ID = 1
         private const val FINAL_SPEECH_STOP_DELAY_MS = 2500L
+        private const val ROUTE_INFO_TICK_MS = 1000L
         private const val REQUEST_STOP = 2
         private const val REQUEST_MUTE = 3
     }

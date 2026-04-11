@@ -135,19 +135,24 @@ class MainActivity : ComponentActivity() {
         startTimer(this, targetTimeMillis)
     }
 
-    fun startRouteTracking() {
+    fun startRouteTracking(requestPermission: Boolean = true) {
         if (!LocationStore.routeActive) {
             stopRouteTracking()
             return
         }
         if (!hasLocationPermission()) {
-            pendingRouteTracking = true
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
+            if (requestPermission) {
+                pendingRouteTracking = true
+                locationPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
                 )
-            )
+            } else {
+                pendingRouteTracking = false
+                LocationStore.setDistanceError("location permission needed")
+            }
             return
         }
 
@@ -158,8 +163,8 @@ class MainActivity : ComponentActivity() {
         startRouteService(this, TimerService.ACTION_ROUTE_STOP)
     }
 
-    fun refreshSelectedDistance() {
-        startRouteTracking()
+    fun refreshSelectedDistance(requestPermission: Boolean = true) {
+        startRouteTracking(requestPermission)
     }
 
     private fun hasLocationPermission(): Boolean {
@@ -178,13 +183,17 @@ fun TimerScreen(modifier: Modifier = Modifier) {
     var locationEditorOpen by remember { mutableStateOf(false) }
     var paceOpen by remember { mutableStateOf(false) }
     var editingLocation by remember { mutableStateOf<SavedLocation?>(null) }
+    var routeEffectInitialized by remember { mutableStateOf(false) }
 
     LaunchedEffect(LocationStore.selectedLocationId, LocationStore.targetPaceKmh, LocationStore.travelMode) {
+        val requestPermission = routeEffectInitialized
+        routeEffectInitialized = true
         if (LocationStore.routeActive) {
             if (LocationStore.selectedLocation != null) {
-                activity?.refreshSelectedDistance()
+                activity?.refreshSelectedDistance(requestPermission)
+            } else {
+                activity?.startRouteTracking(requestPermission)
             }
-            activity?.startRouteTracking()
         } else {
             activity?.stopRouteTracking()
         }
