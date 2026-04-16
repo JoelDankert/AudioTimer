@@ -32,14 +32,15 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private var targetTimeMillis = 0L
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var bluetoothWasConnected = false
     private var soundDisabledForSession = false
-    private var bluetoothMuteManuallyOverridden = false
+    private var soundSessionStarted = false
+    private var sessionBluetoothDevices = emptySet<String>()
     private var lastSpokenMinute: Long? = null
     private var lastRouteInfoSpokenAt = 0L
     private var routeLocationListener: LocationListener? = null
     private var lastRouteDistanceFetchAt = 0L
     private var finalStopScheduled = false
+    private var smoothedSpeedKmh: Double? = null
     private val speedSamples = mutableListOf<LocationSample>()
     private val finalStop = Runnable { stopTimer() }
     private val routeInfoTick = object : Runnable {
@@ -84,6 +85,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            beginSoundSessionIfNeeded()
             startRouteTracking()
             startRouteInfoLoop()
             return START_STICKY
@@ -97,6 +99,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
                 START_STICKY
             } else {
                 stopForegroundNotification()
+                resetSoundSession()
+                stopSelf()
                 START_NOT_STICKY
             }
         }
@@ -118,9 +122,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
             ?.let { name -> AudioMode.entries.firstOrNull { it.name == name } }
             ?: TimerStore.audioMode
         TimerStore.updateAudioMode(requestedAudioMode)
-        bluetoothWasConnected = TimerStore.bluetoothFailsafeEnabled && isBluetoothAudioConnected()
-        soundDisabledForSession = false
-        bluetoothMuteManuallyOverridden = false
+        beginSoundSession(reset = true)
         finalStopScheduled = false
         handler.removeCallbacks(finalStop)
         val initialRemainingMillis = targetTimeMillis - System.currentTimeMillis()
@@ -211,6 +213,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
         stopRouteTracking(clearSpeed = false)
         speedSamples.clear()
+        smoothedSpeedKmh = null
         lastRouteDistanceFetchAt = 0L
 
         val locationManager = getSystemService(LocationManager::class.java)
@@ -245,6 +248,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         }
         routeLocationListener = null
         speedSamples.clear()
+        smoothedSpeedKmh = null
         if (clearSpeed) {
             LocationStore.updateCurrentSpeedKmh(null)
         }
@@ -279,7 +283,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         }
         val speedKmh = if (nativeSpeedKmh != null && nativeSpeedKmh < 1.0) nativeSpeedKmh else windowSpeedKmh
         if (speedKmh != null) {
-            LocationStore.updateCurrentSpeedKmh(speedKmh)
+            val smoothed = smoothSpeed(speedKmh)
+            LocationStore.updateCurrentSpeedKmh(smoothed)
             updateNotification(TimerStore.remainingMillis)
         }
 
@@ -309,6 +314,17 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
                 }
             }
         }
+    }
+
+    private fun smoothSpeed(newSpeedKmh: Double): Double {
+        val oldSpeedKmh = smoothedSpeedKmh
+        val smoothed = if (oldSpeedKmh == null) {
+            newSpeedKmh
+        } else {
+            newSpeedKmh * SPEED_SMOOTHING_NEW_WEIGHT + oldSpeedKmh * SPEED_SMOOTHING_OLD_WEIGHT
+        }
+        smoothedSpeedKmh = smoothed
+        return smoothed
     }
 
     private fun applyRouteEstimate(estimate: RouteEstimate) {
@@ -357,15 +373,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         val audioMode = effectiveAudioMode()
         if (audioMode == AudioMode.None || remainingMillis == 0L || !ttsReady) return
 
-        if (
-            TimerStore.bluetoothFailsafeEnabled &&
-            bluetoothWasConnected &&
-            !bluetoothMuteManuallyOverridden &&
-            !isBluetoothAudioConnected()
-        ) {
-            soundDisabledForSession = true
-            updateNotification(remainingMillis)
-        }
+        updateBluetoothSessionMute(remainingMillis)
         if (soundDisabledForSession) return
 
         if (!TimerStore.repeatRemainingTime) return
@@ -408,16 +416,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         if (!LocationStore.routeActive) return
         if (TimerStore.routeInfoParts.isEmpty()) return
 
-        if (
-            TimerStore.bluetoothFailsafeEnabled &&
-            bluetoothWasConnected &&
-            !bluetoothMuteManuallyOverridden &&
-            !isBluetoothAudioConnected()
-        ) {
-            soundDisabledForSession = true
-            updateNotification(remainingMillis)
-            return
-        }
+        updateBluetoothSessionMute(remainingMillis)
+        if (soundDisabledForSession) return
 
         val now = System.currentTimeMillis()
         val intervalMillis = TimerStore.routeInfoIntervalSeconds.coerceAtLeast(5) * 1000L
@@ -474,24 +474,66 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         return remainingMillis > 0L && remainingMillis % minuteMillis >= minuteMillis - 1000L
     }
 
-    private fun isBluetoothAudioConnected(): Boolean {
+    private fun beginSoundSessionIfNeeded() {
+        if (!soundSessionStarted) {
+            beginSoundSession(reset = true)
+        }
+    }
+
+    private fun beginSoundSession(reset: Boolean) {
+        if (!reset && soundSessionStarted) return
+        soundSessionStarted = true
+        soundDisabledForSession = false
+        sessionBluetoothDevices = if (TimerStore.bluetoothFailsafeEnabled) {
+            connectedBluetoothAudioDevices()
+        } else {
+            emptySet()
+        }
+    }
+
+    private fun updateBluetoothSessionMute(remainingMillis: Long) {
+        if (!TimerStore.bluetoothFailsafeEnabled) return
+        if (soundDisabledForSession) return
+        if (sessionBluetoothDevices.isEmpty()) return
+        if (connectedBluetoothAudioDevices().containsAll(sessionBluetoothDevices)) return
+
+        soundDisabledForSession = true
+        tts?.stop()
+        updateNotification(remainingMillis)
+    }
+
+    private fun connectedBluetoothAudioDevices(): Set<String> {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
         ) {
-            return false
+            return emptySet()
         }
 
         val audioManager = getSystemService(AudioManager::class.java)
         return try {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { device ->
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                        device.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
-            }
+            audioManager.getDevices(AudioManager.GET_DEVICES_ALL)
+                .filter { it.isBluetoothAudioDevice() }
+                .map { it.bluetoothDeviceKey() }
+                .toSet()
         } catch (_: SecurityException) {
-            false
+            emptySet()
+        }
+    }
+
+    private fun AudioDeviceInfo.isBluetoothAudioDevice(): Boolean {
+        return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_HEADSET) ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_SPEAKER) ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_BROADCAST)
+    }
+
+    private fun AudioDeviceInfo.bluetoothDeviceKey(): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            "$type:${address.orEmpty()}"
+        } else {
+            "$type:$id"
         }
     }
 
@@ -543,14 +585,17 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
 
     private fun muteTimer() {
         soundDisabledForSession = true
-        bluetoothMuteManuallyOverridden = false
         tts?.stop()
         updateNotification(targetTimeMillis - System.currentTimeMillis())
     }
 
     private fun unmuteTimer() {
         soundDisabledForSession = false
-        bluetoothMuteManuallyOverridden = true
+        sessionBluetoothDevices = if (TimerStore.bluetoothFailsafeEnabled) {
+            connectedBluetoothAudioDevices()
+        } else {
+            emptySet()
+        }
         updateNotification(targetTimeMillis - System.currentTimeMillis())
     }
 
@@ -563,7 +608,14 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         stopRouteInfoLoop()
         stopRouteTracking(notify = false)
         stopForegroundNotification()
+        resetSoundSession()
         stopSelf()
+    }
+
+    private fun resetSoundSession() {
+        soundSessionStarted = false
+        soundDisabledForSession = false
+        sessionBluetoothDevices = emptySet()
     }
 
     private fun stopForegroundNotification() {
@@ -668,7 +720,7 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
     private fun meterMessage(distanceMeters: Int?): String? {
         if (distanceMeters == null) return null
         val rounded = ((distanceMeters.toDouble() / 10).roundToInt() * 10).coerceAtLeast(0)
-        return "$rounded meter."
+        return "$rounded meters."
     }
 
     private fun speedMessage(speed: Double?, suffix: String): String? {
@@ -712,6 +764,8 @@ class TimerService : Service(), TextToSpeech.OnInitListener {
         private const val NOTIFICATION_ID = 1
         private const val FINAL_SPEECH_STOP_DELAY_MS = 2500L
         private const val ROUTE_INFO_TICK_MS = 1000L
+        private const val SPEED_SMOOTHING_NEW_WEIGHT = 0.3
+        private const val SPEED_SMOOTHING_OLD_WEIGHT = 0.7
         private const val REQUEST_STOP = 2
         private const val REQUEST_MUTE = 3
     }
